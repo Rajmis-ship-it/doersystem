@@ -40,7 +40,7 @@
         <ul class="menu">
           <li onclick="showDashboard()"><i class="fas fa-home"></i> Dashboard</li>
           <li onclick="toggleTheme()"><i class="fas fa-moon"></i> <span id="themeText">Dark Mode</span></li>
-          <li onclick="location.reload()"><i class="fas fa-sign-out-alt"></i> Logout</li>
+          <li onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</li>
         </ul>
       </div>
 
@@ -50,8 +50,9 @@
             <div class="hamburger" onclick="openSidebar()"><i class="fas fa-bars"></i></div>
             <img id="headerLogo" class="header-logo" src="https://cdn-icons-png.flaticon.com/512/2921/2921222.png" alt="Logo">
           </div>
-          <div class="header-center">
+          <div class="header-center" style="display: flex; align-items: center; gap: 15px;">
             <div class="welcome-text">Welcome, <span id="userNameDisplay">User</span></div>
+            <button onclick="logout()" style="background: #ef4444; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;"><i class="fas fa-sign-out-alt"></i> Logout</button>
           </div>
         </div>
 
@@ -78,7 +79,7 @@
                 <option value="All">All Companies</option>
                 <option value="Sales">Sales</option>
                 <option value="Service">Service</option>
-                </select>
+              </select>
             </div>
 
             <button class="btn" onclick="loadScores()">Load Scores</button>
@@ -99,20 +100,30 @@
       // Load Google Charts
       google.charts.load('current', {'packages':['corechart', 'bar']});
 
-      // INITIALIZE
+      let autoUpdateTimer = null; // Holds the stopwatch for auto-updating
+
+      // INITIALIZE & CHECK MEMORY
       document.addEventListener('DOMContentLoaded', () => {
+          // 1. Set dates to today
           const today = new Date().toISOString().split('T')[0];
           document.getElementById('startDate').value = today;
           document.getElementById('endDate').value = today;
+
+          // 2. Check Browser Memory for Login
+          const savedUser = localStorage.getItem("doerAdminUser");
+          if (savedUser) {
+            const userObj = JSON.parse(savedUser);
+            document.getElementById('login-wrapper').style.display = 'none';
+            document.getElementById('main-app').style.display = 'block';
+            document.getElementById('userNameDisplay').textContent = userObj.name;
+          }
       });
 
-      // LOGIN
-      // LOGIN - PRO UPGRADE WITH LOADING STATE
+      // LOGIN - PRO UPGRADE WITH MEMORY
       async function performLogin() {
         const phone = document.getElementById('loginPhone').value;
         const password = document.getElementById('loginPassword').value;
         
-        // 1. Grab the button and change it to "Verifying..."
         const loginBtn = document.querySelector('.login-btn');
         const originalBtnText = loginBtn.innerHTML;
         loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
@@ -120,7 +131,6 @@
         document.getElementById('loginError').style.display = 'none';
 
         try {
-          // 2. Make the "phone call" to Python
           const response = await fetch('/login', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -129,8 +139,10 @@
 
           const result = await response.json();
           
-          // 3. Handle the answer
           if (result.success) {
+            // SAVE TO BROWSER MEMORY
+            localStorage.setItem("doerAdminUser", JSON.stringify(result.user));
+
             document.getElementById('login-wrapper').style.display = 'none';
             document.getElementById('main-app').style.display = 'block';
             document.getElementById('userNameDisplay').textContent = result.user.name;
@@ -138,7 +150,6 @@
             const err = document.getElementById('loginError');
             err.textContent = result.message;
             err.style.display = 'block';
-            // Reset button if login failed
             loginBtn.innerHTML = originalBtnText;
             loginBtn.disabled = false;
           }
@@ -152,28 +163,50 @@
         }
       }
 
-      // FETCH SCORES FROM MYSQL
-      async function loadScores() {
+      // LOGOUT FUNCTION
+      function logout() {
+        localStorage.removeItem("doerAdminUser"); // Erase memory
+        location.reload(); // Refresh the page to show the login screen
+      }
+
+      // FETCH SCORES FROM MYSQL (With Silent Auto-Update)
+      async function loadScores(isSilent = false) {
         const doer = document.getElementById('doerSearch').value;
         const start = document.getElementById('startDate').value;
         const end = document.getElementById('endDate').value;
-        const company = document.getElementById('companySelect').value; // Grab company value
+        const company = document.getElementById('companySelect').value; 
 
         const container = document.getElementById('tablesContainer');
-        container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Querying MySQL...</div>';
         
-        // Hide chart while loading
-        document.getElementById('chart_div').style.display = 'none';
+        // Only show the loading spinner if the user physically clicked the button
+        if (!isSilent) {
+          container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Querying MySQL...</div>';
+          document.getElementById('chart_div').style.display = 'none';
+        }
 
-        // Fetch data including the new company parameter
-        const response = await fetch(`/get_scores?doer=${doer}&start=${start}&end=${end}&company=${company}`);
-        const data = await response.json();
-        
-        renderTable(data);
-        
-        // Draw the chart if there is data
-        if (data.length > 0) {
-          drawChart(data);
+        try {
+          // Fetch data
+          const response = await fetch(`/get_scores?doer=${doer}&start=${start}&end=${end}&company=${company}`);
+          const data = await response.json();
+          
+          renderTable(data);
+          
+          if (data.length > 0) {
+            drawChart(data);
+          } else if (isSilent) {
+             // If silent update finds no data, hide chart
+             document.getElementById('chart_div').style.display = 'none';
+          }
+        } catch (error) {
+          console.error("Auto-Update Error:", error);
+        }
+
+        // Start the background timer ONLY when the user manually clicks the button
+        if (!isSilent) {
+          if (autoUpdateTimer) clearInterval(autoUpdateTimer); // Reset old timers
+          autoUpdateTimer = setInterval(() => {
+            loadScores(true); // 'true' means do it silently in the background
+          }, 10000); // 10000ms = 10 seconds
         }
       }
 
@@ -229,8 +262,8 @@
           chartArea: {width: '60%'},
           hAxis: { title: 'Score (%)' },
           vAxis: { title: 'Doer Name' },
-          colors: ['#ef4444', '#f59e0b'], // Red and Orange
-          bars: 'horizontal' // Horizontal bar chart
+          colors: ['#ef4444', '#f59e0b'], 
+          bars: 'horizontal' 
         };
 
         const chart = new google.visualization.BarChart(document.getElementById('chart_div'));
